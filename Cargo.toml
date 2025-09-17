@@ -1,0 +1,10 @@
+[package]
+name = "xrp-test"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+bs58 = "0.5.1"
+dotenv = "0.15.0"
+ring = "0.17.14"
+ripemd = "0.1.3"
