@@ -1,8 +1,11 @@
 use ring::{
-    digest::{SHA512, digest},
+    digest::{digest, SHA512},
     signature::{Ed25519KeyPair, KeyPair},
 };
 use ripemd::{Digest, Ripemd160};
+
+use crate::constant::XRPL_ALPHABET;
+use crate::error::{Result, XrpError};
 
 enum _Algorithm {
     Ed25519,
@@ -16,34 +19,46 @@ const ED_PREFIX: u8 = 0xed;
 const ED25519_SECRET_LEN: usize = 23;
 const ED25519_SEED_PREFIX: [u8; 3] = [0x01, 0xE1, 0x4B];
 const CHECKSUM_LENGTH: usize = 4;
-const XRPL_ALPHABET: &[u8; 58] = b"rpshnaf39wBUDNEGHJKLM4PQRST7VWXYZ2bcdeCg65jkm8oFqi1tuvAxyz";
 
-/// Ed25519 keypair
-pub struct KeypairEd25519 {
+/// Ed25519 keypair for XRP transactions
+pub struct Keypair {
     raw_private: Vec<u8>,
     raw_public: Vec<u8>,
 }
 
-impl KeypairEd25519 {
-    pub fn from_secret_str(secret_str: &str) -> Self {
-        let seed = decode_ed25519(secret_str, &ED25519_SEED_PREFIX).unwrap();
-        let raw_private = sha512_half(&seed).unwrap();
-        let key_pair = Ed25519KeyPair::from_seed_unchecked(&raw_private).unwrap();
+impl Keypair {
+    /// Create a new keypair from a secret string
+    pub fn from_secret(secret_str: &str) -> Result<Self> {
+        let seed = decode_ed25519(secret_str, &ED25519_SEED_PREFIX)
+            .map_err(|e| XrpError::InvalidSecret(e.to_string()))?;
+        let raw_private = sha512_half(&seed).map_err(|e| XrpError::InvalidSecret(e.to_string()))?;
+        let key_pair = Ed25519KeyPair::from_seed_unchecked(&raw_private)
+            .map_err(|e| XrpError::InvalidSecret(e.to_string()))?;
         let mut raw_public = key_pair.public_key().as_ref().to_vec();
         raw_public.insert(0, ED_PREFIX);
-        Self {
+        Ok(Self {
             raw_private,
             raw_public,
-        }
+        })
+    }
+
+    pub fn public_key_str(&self) -> String {
+        hex::encode_upper(&self.raw_public)
     }
 
     pub fn derive_address(&self) -> String {
         let hash = hash160(&self.raw_public)[..20].to_vec();
         encode_address(&hash)
     }
+
+    pub fn sign(&self, message: &[u8]) -> Vec<u8> {
+        let key_pair = Ed25519KeyPair::from_seed_unchecked(&self.raw_private).unwrap();
+
+        key_pair.sign(message).as_ref().to_vec()
+    }
 }
 
-fn sha512_half(secret_bytes: &[u8]) -> Result<Vec<u8>, &'static str> {
+fn sha512_half(secret_bytes: &[u8]) -> Result<Vec<u8>> {
     Ok(digest(&SHA512, secret_bytes).as_ref()[..32].to_vec())
 }
 
@@ -53,11 +68,11 @@ fn calc_checksum(bytes: &[u8]) -> [u8; CHECKSUM_LENGTH] {
         .unwrap()
 }
 
-fn verify_checksum(input: &[u8], checksum: &[u8]) -> Result<(), &'static str> {
+fn verify_checksum(input: &[u8], checksum: &[u8]) -> Result<()> {
     if calc_checksum(input) == checksum {
         Ok(())
     } else {
-        Err("Invalid checksum")
+        Err(XrpError::InvalidSecret("Invalid checksum".to_string()))
     }
 }
 
@@ -85,19 +100,18 @@ fn encode_address(public_key_bytes: &[u8]) -> String {
         .into_string()
 }
 
-fn decode_ed25519(b58_secret_str: &str, prefix: &[u8]) -> Result<Vec<u8>, &'static str> {
+fn decode_ed25519(b58_secret_str: &str, prefix: &[u8]) -> Result<Vec<u8>> {
     let alphabet = bs58::alphabet::Alphabet::new(XRPL_ALPHABET).unwrap();
 
     let mut decoded_bytes = bs58::decode(b58_secret_str)
         .with_alphabet(&alphabet)
-        .into_vec()
-        .unwrap();
+        .into_vec()?;
 
     if !decoded_bytes.starts_with(prefix) {
-        return Err("Invalid prefix");
+        return Err(XrpError::InvalidSecret("Invalid prefix".to_string()));
     }
     if decoded_bytes.len() != ED25519_SECRET_LEN {
-        return Err("Invalid length");
+        return Err(XrpError::InvalidSecret("Invalid length".to_string()));
     }
 
     let checksum = decoded_bytes.split_off(decoded_bytes.len() - CHECKSUM_LENGTH);
